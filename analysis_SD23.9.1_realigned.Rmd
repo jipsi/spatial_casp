@@ -1,0 +1,735 @@
+---
+title: "SD23.9.1_Shoumit Dey"
+output: rmarkdown::html_vignette
+vignette: >
+  %/VignetteIndexEntry{introduction}
+  %/VignetteEngine{knitr::rmarkdown}
+  %/VignetteEncoding{UTF-8}
+---
+
+```{r message=FALSE}
+library(Seurat)
+library(dplyr)
+library(sqldf)
+library(ggplot2)
+library(patchwork)
+library(mclust)
+library(RColorBrewer)
+library(ggpubr)
+library(tradeSeq)
+library(data.table)
+library(GSEABase)
+library(plotly)
+library(spatstat)
+library(gplots)
+library(corrplot)
+library(stringr)
+library(VennDiagram)
+library(grid)#for printing PDFs off finder makrer
+library(reshape2)
+
+#define study path
+study_name<-"caspase1_nash"
+study_path<-"D:/GoogleDrive/spatial_leishmania/spatial/_EXPERIMENTS/SD23.9.1_UQ_Collaboration_Sabrina_NASH_Caspase/re-alignment/"
+
+#
+all_samples <-c("A","B","C","D")
+sample_group <- c("healthy","caspase1","mc_def","mc_def_caspase1")
+
+
+save_path<-paste0(study_path,"R/")
+save_on<-1
+
+```
+
+```{r loadSeurath5}
+
+seuratSpatial <- list()
+counter<-1
+for (sample in all_samples){
+  sample_dir <- Sys.glob(paste0(study_path, "V*",sample,"*/outs/"))
+  sample_path <- Sys.glob(paste0(study_path,"V*",sample,"*/outs/","filtered*.h5"))
+  sample_path_file <- tail(strsplit(sample_path, split = "/")[[1]], n = 1)
+  key <- paste0("uq_",sample)
+  seuratSpatial[[key]]<-Load10X_Spatial(
+                                        sample_dir,
+                                        filename = sample_path_file,
+                                        assay = "Spatial",
+                                        slice = key,
+                                        filter.matrix = TRUE,
+                                        to.upper = FALSE
+                                      )
+  seuratSpatial[[key]]$orig.ident <- paste0("uq_",sample)
+  seuratSpatial[[key]]$group <- sample_group[[counter]]
+  counter<-counter+1
+}
+
+merged_uq_cohort <- merge(seuratSpatial[[1]],
+                               tail(seuratSpatial, n=length(seuratSpatial)-1),
+                               project = "merged_uq_cohort")
+
+merged_uq_cohort$group <- factor(merged_uq_cohort$group, levels = c("healthy","caspase1","mc_def","mc_def_caspase1"))
+saveRDS(merged_uq_cohort, paste0(save_path, "merged_uq_cohort.Rds"))
+```
+
+```{r data_pre_processing}
+pdf(file = paste0(save_path, study_name, "_overall_counts.pdf"))
+  for(object in seuratSpatial){
+    plot1 <- VlnPlot(object, features = "nCount_Spatial", pt.size = 0.1) + NoLegend()
+    plot2 <- SpatialFeaturePlot(object, features = "nCount_Spatial") + theme(legend.position = "right")
+    plot3 <- SpatialFeaturePlot(object, features = "nFeature_Spatial") + theme(legend.position = "right")
+    print(plot1)
+    print(plot2 + plot3)
+    #print(wrap_plots(plot1, plot2, plot3))
+  }
+dev.off()
+
+```
+
+```{r find_original_sample_meta, warning=FALSE}
+
+# #read_meta
+a_meta<-read.csv(paste0(study_path,"/A_realign.csv"))
+a_meta$Barcode<-paste0(a_meta$Barcode,"_1")
+b_meta<-read.csv(paste0(study_path,"/B_realign.csv"))
+b_meta$Barcode<-paste0(b_meta$Barcode,"_2")
+c_meta<-read.csv(paste0(study_path,"/C_realign.csv"))
+c_meta$Barcode<-paste0(c_meta$Barcode,"_3")
+d_meta<-read.csv(paste0(study_path,"/D_realign.csv"))
+d_meta$Barcode<-paste0(d_meta$Barcode,"_4")
+
+all_meta<-rbind(a_meta, b_meta, c_meta, d_meta)
+all_meta$Replicate<-paste0("n",all_meta$Replicate)
+rownames(all_meta)<-all_meta$Barcode
+# 
+merged_uq_cohort <- AddMetaData(merged_uq_cohort, metadata = all_meta)
+merged_uq_cohort$origin <- paste0(merged_uq_cohort$group, "_", merged_uq_cohort$Replicate)
+
+pdf(paste0(save_path, "_preQC_SpatialSamplePlot.pdf"), height = 6, width = 9)
+  x<-SpatialDimPlot(merged_uq_cohort, image.alpha = 0, crop = FALSE, pt.size.factor = 1.2, ncol = 2, group.by = "group")
+  y<-SpatialDimPlot(merged_uq_cohort, image.alpha = 0, crop = FALSE, pt.size.factor = 1.2, ncol = 2, group.by = "origin")
+  print(x)
+ print(y)
+dev.off() 
+
+merged_uq_cohort <- subset(merged_uq_cohort, subset = origin %in% c("mc_def_NA","caspase1_n"), invert=T)
+
+pdf(paste0(save_path, "SpatialSamplePlot.pdf"), height = 6, width = 9)
+  x<-SpatialDimPlot(merged_uq_cohort, image.alpha = 0, crop = FALSE, pt.size.factor = 1.2, ncol = 2, group.by = "group")
+  y<-SpatialDimPlot(merged_uq_cohort, image.alpha = 0, crop = FALSE, pt.size.factor = 1.2, ncol = 2, group.by = "origin")
+   print(x)
+   print(y)
+ dev.off()  
+
+```
+
+```{r sctransform_workflow_by_sample}
+
+seuratSplitBySample <- SplitObject(merged_uq_cohort, split.by = "origin")
+
+for(key in unique(merged_uq_cohort$origin)){
+  seuratSplitBySample[[key]] <- SCTransform(seuratSplitBySample[[key]], assay = "Spatial", verbose = FALSE, new.assay.name = "SCT_new", variable.features.n = 3000)
+}
+
+```
+
+```{r integrate_workflow_for_spatial}
+
+features <- SelectIntegrationFeatures(object.list = seuratSplitBySample, nfeatures = 3000)
+seuratSplitBySample <- PrepSCTIntegration(object.list = seuratSplitBySample, anchor.features = features, assay = "SCT_new")
+#object_list[[paste0("cluster",cluster)]]List <- lapply(X = object_list[[paste0("cluster",cluster)]]List, FUN = RunPCA, features = features)
+
+
+immune.anchors <- FindIntegrationAnchors(object.list = seuratSplitBySample, normalization.method = "SCT", anchor.features = features)
+
+
+integrated_uq_cohort <- IntegrateData(anchorset = immune.anchors, normalization.method = "SCT")#, features.to.integrate =
+```
+
+```{r clustering}
+
+
+
+###########################QC Complete######################################
+############################################################################
+
+res=0.3
+#LC_cohort1 <- RunPCA(LC_cohort1, assay = "SCT", verbose = FALSE, features = VariableFeatures(LC_cohort1))
+integrated_uq_cohort <- RunPCA(integrated_uq_cohort, assay = "integrated", verbose = FALSE)
+ElbowPlot(integrated_uq_cohort)
+dims=12
+
+integrated_uq_cohort <- FindNeighbors(integrated_uq_cohort, reduction = "pca", dims = 1:dims)
+
+integrated_uq_cohort <- FindClusters(integrated_uq_cohort, verbose = FALSE, resolution = res)
+integrated_uq_cohort <- RunUMAP(integrated_uq_cohort, reduction = "pca", dims = 1:dims)
+integrated_uq_cohort <- RunTSNE(integrated_uq_cohort, reduction = "pca", dims = 1:dims)
+
+pdf(paste0(save_path, "DimPlot_PC1to",dims,"res",res,".pdf"))
+  DimPlot(integrated_uq_cohort, reduction = "tsne", label = TRUE) + NoLegend() 
+    DimPlot(integrated_uq_cohort, reduction = "umap", label = TRUE) + NoLegend()
+  
+  DimPlot(integrated_uq_cohort, reduction = "tsne", group.by = "orig.ident") + NoLegend() 
+    DimPlot(integrated_uq_cohort, reduction = "umap", group.by = "orig.ident") 
+  
+  DimPlot(integrated_uq_cohort, reduction = "tsne", group.by = "group") + NoLegend() 
+    DimPlot(integrated_uq_cohort, reduction = "umap", group.by = "group")
+  
+  DimPlot(integrated_uq_cohort, reduction = "tsne", split.by = "group")
+  DimPlot(integrated_uq_cohort, reduction = "umap", split.by = "group")
+  DimPlot(integrated_uq_cohort, reduction = "pca", split.by = "group")
+dev.off()
+  #saveRDS(integrated_uq_cohort, paste0(save_path, "integrated_uq_cohort.rds"))
+  #Output proportion per cell type, dividing by the sum of the column (margin=2)
+  prop.table(table(Idents(integrated_uq_cohort), integrated_uq_cohort$orig.ident), margin = 2)
+  #write proportion per cell type
+  write.csv(prop.table(table(Idents(integrated_uq_cohort), integrated_uq_cohort$orig.ident), margin = 2), paste0(save_path, "/markers/", "_ident_proportions_sample.csv"), row.names =TRUE)
+
+pdf(paste0(save_path, "SpatialDimPlot_PC1to",dims,"res",res,".pdf"))
+  x<-SpatialDimPlot(integrated_uq_cohort, image.alpha = 0, crop = FALSE, pt.size.factor = 1.2)
+  y<-SpatialDimPlot(integrated_uq_cohort, alpha = c(0.4, 0.4), crop = FALSE)
+
+  for(i in 1:48){
+    fig1<-x[[i]]
+    #print(ggarrange(fig1,fig2, ncol = 1))
+    print(fig1)
+  }
+  # for(i in 1:36){
+  #   fig2<-y[[i]]
+  #   #print(ggarrange(fig1,fig2, ncol = 1))
+  #   print(fig2)
+  # }
+  
+  rm(x, y)
+dev.off()  
+
+
+saveRDS(integrated_uq_cohort, paste0(save_path, "integrated_dims",dims,"_res",res,"_uq_cohort.Rds"))
+```
+
+```{r read_RDS_if_available}
+res=0.3
+dims=12
+integrated_uq_cohort <- readRDS(paste0(save_path, "integrated_dims",dims,"_res",res,"_uq_cohort.Rds"))
+integrated_uq_cohort$group <- factor(integrated_uq_cohort$group, levels = c("healthy","caspase1","mc_def","mc_def_caspase1"))
+integrated_uq_cohort$origin <- factor(integrated_uq_cohort$origin, levels = c("healthy_nA1","healthy_nA2","healthy_nA3","caspase1_nB1","caspase1_nB2","caspase1_nB3","mc_def_nC1","mc_def_nC2","mc_def_nC3","mc_def_caspase1_nD1","mc_def_caspase1_nD2","mc_def_caspase1_nD3"))
+#for plotting purposes only
+merged_uq_cohort <- readRDS(paste0(save_path, "merged_uq_cohort.Rds"))
+
+meta_clustering <- integrated_uq_cohort@meta.data[,c("seurat_clusters","nCount_Spatial")]
+meta_clustering$nCount_Spatial <- NULL
+merged_uq_cohort <- AddMetaData(merged_uq_cohort, metadata = meta_clustering)
+```
+
+```{r plotting_bits}
+
+
+pdf(paste0(save_path, "Spatial_clustering_plot.pdf"), width = 7, height = 6)
+  #with image
+  x<-SpatialDimPlot(merged_uq_cohort, group.by = "seurat_clusters", ncol = 2, crop = F, pt.size.factor = 1, stroke = 0)
+  a<-x[[1]]+NoLegend()
+  b<-x[[2]]+NoLegend()
+  c<-x[[3]]+NoLegend()
+  d<-x[[4]]+NoLegend()
+  print(a+b+c+d)
+  #without image
+  y<-SpatialDimPlot(merged_uq_cohort, group.by = "seurat_clusters", ncol = 2, image.alpha = 0, crop = F, pt.size.factor = 1, stroke = 0)
+  a<-y[[1]]+NoLegend()
+  b<-y[[2]]+NoLegend()
+  c<-y[[3]]+NoLegend()
+  d<-y[[4]]+NoLegend()
+  print(a+b+c+d)
+  #for legend only
+  SpatialDimPlot(merged_uq_cohort, group.by = "seurat_clusters", ncol = 2, crop = F, pt.size.factor = 1, stroke = 0)
+  a
+  b
+  c
+  d
+dev.off()
+
+pdf(paste0(save_path, "clustering_plot.pdf"), width = 7, height = 6)
+  DimPlot(integrated_uq_cohort, label = T, label.box = T, label.size = 10, pt.size = 2, reduction = "tsne") + NoLegend()
+  DimPlot(integrated_uq_cohort, label = T, label.box = T, label.size = 10, pt.size = 2, reduction = "umap") + NoLegend()
+  DimPlot(integrated_uq_cohort, reduction = "tsne", group.by = "origin", pt.size = 0.5) + ggtitle(label = "")
+  DimPlot(integrated_uq_cohort, reduction = "tsne", group.by = "group", pt.size = 0.5) + ggtitle(label = "")
+dev.off()  
+
+pdf(paste0(save_path, "clustering_split_by_groups_plot.pdf"), width = 14, height = 6)
+  DimPlot(integrated_uq_cohort, pt.size = 2, reduction = "tsne", split.by = "origin") + ggtitle(label = "")
+  DimPlot(integrated_uq_cohort, pt.size = 2, reduction = "tsne", split.by = "group") + ggtitle(label = "")
+  DimPlot(integrated_uq_cohort, pt.size = 2, reduction = "umap", split.by = "origin") + ggtitle(label = "")
+  DimPlot(integrated_uq_cohort, pt.size = 2, reduction = "umap", split.by = "group") + ggtitle(label = "")
+dev.off()
+
+prop.table(table(Idents(integrated_uq_cohort), integrated_uq_cohort$origin), margin = 2)
+write.csv(prop.table(table(Idents(integrated_uq_cohort), integrated_uq_cohort$origin), margin = 2), paste0(save_path, "/markers/", "_ident_proportions_sample.csv"), row.names =TRUE)
+prop.table(table(Idents(integrated_uq_cohort), integrated_uq_cohort$group), margin = 2)
+write.csv(prop.table(table(Idents(integrated_uq_cohort), integrated_uq_cohort$group), margin = 2), paste0(save_path, "/markers/", "_ident_proportions_group.csv"), row.names =TRUE)
+
+pdf(paste0(save_path, "Figure4_Il1rn_Cxcl10_Mmp12"), width = 9, height = 5)
+  VlnPlot(integrated_uq_cohort, features = c("Il1rn","Cxcl10","Mmp12"), group.by = "Replicate", assay = "SCT_new", cols = rep("grey",12))
+dev.off()
+
+```
+
+```{r differential_expresion BY INFERRED BY SEURAT CLUSTERS}
+
+integrated_uq_cohort <- PrepSCTFindMarkers(integrated_uq_cohort, assay = "SCT_new")
+
+
+all_markers <- FindAllMarkers(integrated_uq_cohort, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, assay = "SCT_new")
+
+write.csv(all_markers, paste0(save_path, "/markers/","integ_markers_dims",dims,"_res",res,".csv"), row.names = TRUE)
+
+all_markers <- read.csv(paste0(save_path, "/markers/","integ_markers_dims",dims,"_res",res,".csv"), header = TRUE)
+
+Idents(integrated_uq_cohort) <- "group"
+
+all_group_markers <- FindAllMarkers(integrated_uq_cohort, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, assay = "SCT_new")
+write.csv(all_group_markers, paste0(save_path, "/markers/","group_integ_markers_dims",dims,"_res",res,".csv"), row.names = TRUE)
+all_group_markers <- read.csv(paste0(save_path, "/markers/","group_integ_markers_dims",dims,"_res",res,".csv"), header = TRUE)
+
+
+
+Idents(integrated_uq_cohort) <- "seurat_clusters"
+
+pdf(paste0(save_path, "heatmap_overall_clustering_with_Legend.pdf"), height = 10, width = 5)
+  DefaultAssay(integrated_uq_cohort) <- "SCT_new"
+  merged_uq_cohort<-SetIdent(integrated_uq_cohort, value = "seurat_clusters") 
+  all_markers %>%
+      group_by(cluster) %>%
+      top_n(n = 10, wt = avg_log2FC) -> top5
+  DoHeatmap(integrated_uq_cohort, features = top5$gene) #+ NoLegend()
+dev.off()
+
+sub0 <- subset(integrated_uq_cohort, subset = seurat_clusters == "0")
+sub0 <- PrepSCTFindMarkers(sub0, assay = "SCT_new")
+
+sub0_ab_markers <- FindMarkers(sub0, ident.1 = "caspase1", ident.2 = "healthy", group.by = "group", assay = "SCT_new")
+write.csv(sub0_ab_markers, paste0(save_path, "/markers/sub0_ab_markers.csv"), row.names = TRUE)
+sub0_ab_markers <- read.csv(paste0(save_path, "/markers/sub0_ab_markers.csv"), header = TRUE)
+
+df <- sub0_ab_markers
+
+#df$gene <- rownames(df)
+rownames(df) <- df$X
+df$X <- NULL
+df$p_val <- NULL
+colnames(df) <- c("log2FoldChange","pct1","pct2","pvalue")
+df$pvalue[df$pvalue==0]<-5e-305
+
+
+# ccls_ils_tnfs_and_top10s<-c(grep("^Ccl", rownames(df),value = T), grep("^Cxc", rownames(df),value = T), grep("^Tnf", rownames(df),value = T), grep("^Il", rownames(df),value = T), grep("^Ifn", rownames(df),value = T))
+# 
+# df %>%
+#     top_n(n = 10, wt = log2FoldChange) -> top10
+# df %>%
+#     top_n(n = -10, wt = log2FoldChange) -> bottom10
+# ccls_ils_tnfs_and_top10s<-c(ccls_ils_tnfs_and_top10s, top10$gene, bottom10$gene)
+
+library(EnhancedVolcano)
+#Figure 1VisD
+pdf(paste0(save_path, "markers/FigCluster0_Caspase1VsHealthy.pdf"), height = 13, width = 15)
+        print(EnhancedVolcano(df,
+                        lab = rownames(df),
+                        # selectLab = ccls_ils_tnfs_and_top10s,
+                        boxedLabels = TRUE,
+                        x = 'log2FoldChange',
+                       xlim = c(-1.5, 3),
+                        ylim = c(0,225),
+                        y = 'pvalue',
+                        title = "Cluster0_Caspase1VsHealthy",
+                        pCutoff = 10e-5,
+                        #75% increase
+                        FCcutoff = 0.807,
+                        pointSize = 3,
+                        labSize = 7, 
+                        subtitle = "",
+                        drawConnectors = TRUE,
+                        widthConnectors = 0.01,
+                        gridlines.major = FALSE,
+                        gridlines.minor = FALSE
+                        )
+    )
+dev.off()
+
+sub0_ca_markers <- FindMarkers(sub0, ident.1 = "mc_def", ident.2 = "healthy", group.by = "group", assay = "SCT_new")
+write.csv(sub0_ca_markers, paste0(save_path, "/markers/sub0_ca_markers.csv"), row.names = TRUE)
+sub0_ca_markers <- read.csv(paste0(save_path, "/markers/sub0_ca_markers.csv"), header = TRUE)
+
+df <- sub0_ca_markers
+
+#df$gene <- rownames(df)
+rownames(df) <- df$X
+df$X <- NULL
+df$p_val <- NULL
+colnames(df) <- c("log2FoldChange","pct1","pct2","pvalue")
+df$pvalue[df$pvalue==0]<-5e-305
+
+
+library(EnhancedVolcano)
+#Figure 1VisD
+pdf(paste0(save_path, "markers/FigCluster0_MCDHealthyVsHealthy.pdf"), height = 13, width = 15)
+        print(EnhancedVolcano(df,
+                        lab = rownames(df),
+                        # selectLab = ccls_ils_tnfs_and_top10s,
+                        boxedLabels = TRUE,
+                        x = 'log2FoldChange',
+                       xlim = c(-1.5, 3),
+                        ylim = c(0,225),
+                        y = 'pvalue',
+                        title = "Cluster0_MCDHealthyVsHealthy",
+                        pCutoff = 10e-5,
+                        #75% increase
+                        FCcutoff = 0.807,
+                        pointSize = 3,
+                        labSize = 7, 
+                        subtitle = "",
+                        drawConnectors = TRUE,
+                        widthConnectors = 0.01,
+                        gridlines.major = FALSE,
+                        gridlines.minor = FALSE
+                        )
+    )
+dev.off()
+
+```
+
+```{r de between spec. genes}
+DefaultAssay(integrated_uq_cohort) <- "Spatial"
+genes<-c("Cd14","Tlr4","Tlr2","Ikbkb","Irak4","Nfkbia","Nfkb2","Nfkb1","Ccr2","Ccl5","Relb","Rela","Spi1","Nlrp3","Nlrp6","Nlrc4","Asc","Casp1","Casp8","Il1b","Il1a","Il1r1","Il1rn","Il18","Il1f9","Gsdmd","Gsdme","Cxcl10","Cxcl9","Cxcl11","Stat1","Stat5","Ifng","Ifnb","Ifna","Irf3","Tnf","Cgas","Sting1","Tbk1","Mmp12","Mmp9","Mmp2","Dpp8","Ncf1","Ncf4","Slpi","Ctsg","Elne","Prtn3","Serpinb1","Csf3r","Csf1","Csf2","Csf3")
+
+Idents(integrated_uq_cohort) <- "group"
+genes_markers <- FindAllMarkers(integrated_uq_cohort, features = genes) 
+
+pdf(paste0(save_path, "gene_list_summary.pdf"), width = 13, height = 6)
+  DotPlot(integrated_uq_cohort, features = genes) + RotatedAxis()
+  DotPlot(integrated_uq_cohort, features = genes, group.by = "Replicate") + RotatedAxis()
+dev.off()
+
+lipid_genes <- c("Elovl3","Elovl1","Elovl7","Ces2c","Nudt19","Nudt7","Nsdhl","Plin2","Plin1","Plin5","Fabp1","Fabp4","Acsl5","Acsl1")
+
+pdf(paste0(save_path, "lipid_genes_list_summary.pdf"), width = 13, height = 6)
+  DotPlot(integrated_uq_cohort, features = lipid_genes) + RotatedAxis()
+  DotPlot(integrated_uq_cohort, features = lipid_genes, group.by = "Replicate") + RotatedAxis()
+dev.off()
+
+```
+
+
+
+
+```{r correlations, warning=FALSE}
+######
+#function correlation
+######
+fn_get_corr_mat <- function(obj, gene_name){
+  correlation_df_list<-list()
+
+
+  mat_count<-as.matrix(obj[['Spatial']]@data)
+
+  #search correlations for first lincRNA only - hardcoded atm
+  #gene_name<-X[1]
+  type<-"spearman"
+
+  #get 'gene of interest' expression of all cells
+  count_gene<-mat_count[gene_name,]
+
+  correlation_mat<-matrix(nrow = dim(mat_count)[1], ncol = 2)
+  #add rownames
+  rownames(correlation_mat) <- rownames(mat_count)
+  # Create a nested loop
+  for(row in 1:nrow(mat_count)) {
+    correlation<-stats::cor.test(count_gene, mat_count[row,], method = type)
+    correlation_mat[row,1]<-correlation$estimate
+    correlation_mat[row,2]<-correlation$p.value
+  }
+  correlation_mat<-as.data.frame(correlation_mat)
+  colnames(correlation_mat)<-c("corr_estimate","pvalue")
+  correlation_mat$gene<-rownames(correlation_mat)
+  #discard pvalues greater than 0.05 and correlations below 0.1
+  correlation_df<-sqldf::sqldf("SELECT gene, corr_estimate, pvalue
+                                FROM correlation_mat
+                                WHERE pvalue < 0.05
+                                AND corr_estimate > 0.1
+                                ORDER BY corr_estimate DESC")
+
+  anti_correlation_df<-sqldf::sqldf("SELECT gene, corr_estimate, pvalue
+                                FROM correlation_mat
+                                WHERE pvalue < 0.05
+                                AND corr_estimate < -0.1
+                                ORDER BY corr_estimate ASC")
+  #write.table(correlation_mat, file = paste0(exp_path, "All_CD8_T_PBMC_Malat1_Vs_allGene_flu_corr.csv"), sep=",")
+  correlation_df_list[[paste0("corr_", gene_name)]]<-correlation_df
+  correlation_df_list[[paste0("acorr_", gene_name)]]<-anti_correlation_df
+  list_corr_mat <- correlation_df_list
+  return(list_corr_mat)
+}
+
+gene_name<-"Il1r1"
+
+# Start the clock!
+ptm <- proc.time()
+
+#merged_uq_cohort<-PrepSCTFindMarkers(merged_uq_cohort)
+
+list_corr_mat<-fn_get_corr_mat(merged_uq_cohort, gene_name)
+
+# Stop the clock
+time_taken<- proc.time() - ptm
+
+print(paste0("Time elapsed: ", sprintf((time_taken[3]/60), fmt = '%#.2f')," minutes"))
+
+head(list_corr_mat[[paste0("corr_", gene_name)]],20)
+head(list_corr_mat[[paste0("acorr_", gene_name)]],20)
+
+write.table(list_corr_mat[[paste0("corr_", gene_name)]], file = paste0(save_path,"corr_",gene_name,".csv"), sep=",", row.names = FALSE)
+
+write.table(list_corr_mat[[paste0("acorr_", gene_name)]], file = paste0(save_path, "acorr_",gene_name,".csv"), sep=",", row.names = FALSE)
+
+rm(list_corr_mat)
+```
+
+```{r correlation_between_cytokines}
+#significance
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+
+
+
+ccls_ils_tnfs_and_ils<-c(grep("^CCL", rownames(merged_uq_cohort),value = T), grep("^CXC", rownames(merged_uq_cohort),value = T), grep("^TNF", rownames(merged_uq_cohort),value = T), grep("^IL", rownames(merged_uq_cohort),value = T), grep("^IFN", rownames(merged_uq_cohort),value = T))
+
+#merged_uq_cohort<-PrepSCTFindMarkers(merged_uq_cohort)
+mat_genes<-as.matrix(integrated_uq_cohort@assays[["SCT_new"]]@data)
+mat_genes<-mat_genes[ccls_ils_tnfs_and_ils, ]
+
+ccls_ils_tnfs_and_ils_corr <- cor(mat_genes)
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(ccls_ils_tnfs_and_ils_corr)
+
+
+pdf(paste0(save_path, "ccls_ils_tnfs_and_ils_corr.pdf"), height = 10, width=15)
+  corrplot(ccls_ils_tnfs_and_ils_corr, type="lower", order="hclust",
+           p.mat = p.mat, sig.level = 0.01, insig = "blank", tl.col="black", tl.srt=45,
+           col=brewer.pal(n=8, name="PuOr"))
+dev.off()  
+
+```
+
+
+```{r pc_as_feature, warning=FALSE}
+
+
+#First visualise and save PCs as feature plots
+pdf(paste0(save_path, "all_PCs_overall.pdf"))
+  DimHeatmap(integrated_uq_cohort, dims = 1:15, cells = 500, balanced = TRUE)
+  DimHeatmap(integrated_uq_cohort, dims = 16:30, cells = 500, balanced = TRUE)
+dev.off()
+
+for (pc in 1:10){
+    pc_name <- paste0("PC", pc)
+    
+    pdf(paste0(save_path, pc_name ,"_spatial_feature.pdf"))
+  
+      #Step 1: Add PC as a metadata
+      merged_uq_cohort <- AddMetaData(merged_uq_cohort, Embeddings(integrated_uq_cohort, reduction = "pca")[, pc], col.name = pc_name)
+      #Step 2: Visualise on a Spatial plot
+      #print(SpatialPlot(merged_uq_cohort, features = pc_name, alpha = c(0.4,0.4))# + ggplot2::geom_vline(xintercept=seq(100, 500, by=20), color="white", linetype="dashed") + ggplot2::geom_hline(yintercept=seq(100, 500, by=20), color="white", linetype="dashed")
+      #)
+      x<-SpatialPlot(merged_uq_cohort, features = pc_name, alpha = c(4, 4), image.alpha=0)
+      y<-SpatialPlot(merged_uq_cohort, features = pc_name, alpha = c(0.0, 0.4))
+        #unstreated3wk
+      for(i in 1:4){
+        fig1<-x[[i]]
+        #print(ggarrange(fig1,fig2, ncol = 1))
+        print(fig1)
+      }
+      for(i in 1:4){
+        fig2<-y[[i]]
+        #print(ggarrange(fig1,fig2, ncol = 1))
+        print(fig2)
+      }
+      
+      dev.off()
+
+}      
+
+
+pdf(paste0(save_path, "VizDimLoadings.pdf"))
+  for (pc in 1:30){
+    if (pc %% 2 == 0) {
+      print(DimPlot(integrated_uq_cohort, reduction = "pca", pt.size = 0.5, group.by = "group", dims = c((pc-1), pc)))
+      print(VizDimLoadings(integrated_uq_cohort, dims = (pc-1):pc, reduction = "pca"))
+    }
+  }
+dev.off()
+
+#PC8 very interesting
+# x<-SpatialPlot(merged_uq_cohort, features = "NAMPT", alpha = c(4, 4), image.alpha=0)
+# y<-SpatialPlot(merged_uq_cohort, features = "NAMPT", alpha = c(0.0, 0.4))
+# print(x[[2]]+y[[2]])
+# 
+# a<-DimPlot(merged_uq_cohort, label = TRUE, label.box = TRUE) + NoLegend() 
+# b<-SpatialDimPlot(merged_uq_cohort, images = "LC_402_3C2", crop = FALSE) + NoLegend()
+# a+b
+```
+
+
+```{r re_integrate_sub_cluster}
+  
+  
+  cluster2only <- subset(integrated_uq_cohort, idents = 2)
+  cluster2only_for_spatial <- subset(merged_uq_cohort, subset = seurat_clusters == 2)
+  DefaultAssay(cluster2only)<-"integrated"
+  #cluster2only <- SCTransform(cluster2only, method = "glmGamPoi", verbose = FALSE, assay = "Spatial")
+  
+  subclust_dims <- 10
+  subclust_res <- 0.8
+  
+  cluster2only <- RunPCA(cluster2only, verbose = FALSE)
+  ElbowPlot(cluster2only)
+  cluster2only <- FindNeighbors(cluster2only, reduction = "pca", dims = 1:subclust_dims)
+  cluster2only <- FindClusters(cluster2only, verbose = FALSE, resolution=subclust_res)
+  cluster2only <- RunUMAP(cluster2only, reduction = "pca", dims = 1:subclust_dims)
+  cluster2only <- RunTSNE(cluster2only, reduction = "pca", dims = 1:subclust_dims)
+  
+  
+  cluster2only <- SetIdent(cluster2only, value="seurat_clusters")
+  
+  cell_colours_cluster2only <- c("darkorchid","darkgoldenrod1")
+  
+  
+  pdf(paste0(save_path, "cluster2only_DimPlot_PC1to",subclust_dims,"res",subclust_res,".pdf"))
+    DimPlot(cluster2only, reduction = "tsne", label = TRUE, label.box = TRUE, cols = 
+              ) + NoLegend() 
+      DimPlot(cluster2only, reduction = "umap", label = TRUE, label.box = TRUE) + NoLegend()
+    
+    DimPlot(cluster2only, reduction = "tsne", group.by = "orig.ident") + NoLegend() 
+      DimPlot(cluster2only, reduction = "umap", group.by = "orig.ident") 
+    
+    DimPlot(cluster2only, reduction = "tsne", group.by = "group") + NoLegend() 
+      DimPlot(cluster2only, reduction = "umap", group.by = "group")
+    
+    DimPlot(cluster2only, reduction = "tsne", split.by = "group", label = TRUE, label.box = TRUE) + NoLegend()
+    DimPlot(cluster2only, reduction = "umap", split.by = "group", label = TRUE, label.box = TRUE)
+    DimPlot(cluster2only, reduction = "pca", split.by = "group", label = TRUE, label.box = TRUE)
+  dev.off()
+  
+  meta_sub_clustering <- cluster2only@meta.data[,c("seurat_clusters","nCount_Spatial")]
+  meta_sub_clustering$nCount_Spatial <- NULL
+  cluster2only_for_spatial <- AddMetaData(cluster2only_for_spatial, metadata = meta_sub_clustering)
+  
+  pdf(paste0(save_path, "Sub-clustered_2_Spatial_clustering_plot.pdf"), width = 7, height = 6)
+    #with image
+    x<-SpatialDimPlot(cluster2only_for_spatial, group.by = "seurat_clusters", ncol = 2, crop = F, pt.size.factor = 1, stroke = 0)
+    a<-x[[1]]+NoLegend()
+    b<-x[[2]]+NoLegend()
+    c<-x[[3]]+NoLegend()
+    d<-x[[4]]+NoLegend()
+    print(a+b+c+d)
+    #without image
+    y<-SpatialDimPlot(cluster2only_for_spatial, group.by = "seurat_clusters", ncol = 2, image.alpha = 0, crop = F, pt.size.factor = 1, stroke = 0)
+    a<-y[[1]]+NoLegend()
+    b<-y[[2]]+NoLegend()
+    c<-y[[3]]+NoLegend()
+    d<-y[[4]]+NoLegend()
+    print(a+b+c+d)
+    #for legend only
+    SpatialDimPlot(cluster2only_for_spatial, group.by = "seurat_clusters", ncol = 2, crop = F, pt.size.factor = 1, stroke = 0)
+    a
+    b
+    c
+    d
+  dev.off() 
+  
+  cluster2only<-PrepSCTFindMarkers(cluster2only, assay = "SCT_new")
+  
+  allmarkers <- FindAllMarkers(cluster2only, only.pos = T, assay = "SCT_new")
+  write.csv(allmarkers, paste0(save_path, "/markers/cluster2only_sub_markers.csv"), row.names = TRUE)
+  
+  saveRDS(cluster2only,paste0(save_path,"nash_caspase_interesting.rds"))
+```
+
+
+```{r differential_expresion BY INFERRED BY SEURAT CLUSTERS IN cluster2only}
+
+subclust_dims <- 10
+subclust_res <- 0.20
+
+cluster2only <- PrepSCTFindMarkers(cluster2only, assay = "SCT_new")
+
+
+cluster2only_all_markers <- FindAllMarkers(cluster2only, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, assay = "SCT_new")
+
+write.csv(cluster2only_all_markers, paste0(save_path, "/markers/","cluster2only_markers_dims",subclust_dims,"_res",subclust_res,".csv"), row.names = FALSE)
+
+cluster2only_all_markers <- read.csv(paste0(save_path, "/markers/","cluster2only_markers_dims",subclust_dims,"_res",subclust_res,".csv"), header = TRUE)
+
+
+
+pdf(paste0(save_path, "cluster2only_markers.pdf"), height = 3, width = 7)
+  DotPlot(cluster2only, features = c("Cyp2f2","Arg1","Cps1","Inmt","Mup3","Uroc1","Mt2","Lcn2","Cd74","Cxcl10","Mt1","Gstm3","Il1rn","Ctss"), group.by = "seurat_clusters", cols = c("grey","red")) + RotatedAxis()
+dev.off()
+
+```
+
+
+```{r addmodule for single cells}
+
+#Check gene enrichment scores
+fn_add_gene_modules <- function(obj, assay) {
+
+  DefaultAssay(obj) <- assay
+
+  ListA <- c("Tubb6","Cstb","Pik3r5","Alas1","Lcn2","Myo1f","Gpr132","Anxa2","Myof","Mtmr11","Elovl7","Phlda3","Orm2","Adap1","Arhgap30","Hmox1","Dock2","S100a4","Elf3")
+
+  ListB <- c("Gstm1","Acod1","Saa3","Evl","Dyrk3","Tmsb4x","Gstm3","Lat2","Cidec","Nlrp6","Fasn","Galt","Ppp1r3b","Insig1","G6pc","Ppp1r3c","Acly","Abcc6")
+
+  ListC <- c("Egfr","Elovl3","Phospho1","Hmgcs1","Ces2c","Foxa2","P4ha1","Cgas","Nsdhl","Lcp1","Aldh1a1","Aldh3a2","Ptpn1","Dse","Ide","Nudt7","Fabp4","Acsl5","Msmo1")
+
+  ListD <- c("Tm7sf2","Zfyve16","Plod3","Arhgef26","Lhpp","Ces3b","Selenbp2","Plin2","Cdh4","Actg2","Por","Slc6a13")
+
+  
+  obj <- AddModuleScore(object = obj, features = list(ListA) , ctrl = 100, name = 'ListA_Spots')
+  obj <- AddModuleScore(object = obj, features = list(ListB) , ctrl = 100, name = 'ListB_Spots')
+  obj <- AddModuleScore(object = obj, features = list(ListC) , ctrl = 100, name = 'ListC_Spots')
+  obj <- AddModuleScore(object = obj, features = list(ListD) , ctrl = 100, name = 'ListD_Spots')
+  
+  
+  return(obj)
+}
+
+
+integrated_uq_cohort <- fn_add_gene_modules(integrated_uq_cohort, "SCT_new")
+
+FeaturePlot(integrated_uq_cohort, features=c("ListA_Spots1","ListB_Spots1","ListC_Spots1","ListD_Spots1"))
+```
+
+```{r }
+Idents(merged_uq_cohort) <- "group"
+x<-FindAllMarkers(merged_uq_cohort, assay = "Spatial")
+Idents(merged_uq_cohort) <- "seurat_clusters"
+pdf(paste0(save_path, "Il1r1_spatial.pdf"))
+  #VlnPlot(merged_uq_cohort, features = "Il1r1", group.by = "group") + xlab(label = "")
+  SpatialFeaturePlot(merged_uq_cohort, features = "Il1r1", ncol = 2, image.alpha = 0)
+dev.off()
+il1r1_counts<-t(merged_uq_cohort@assays$Spatial["Il1r1"])
+il1r1_counts<-data.frame(il1r1_counts)
+merged_uq_cohort<-AddMetaData(merged_uq_cohort, metadata =il1r1_counts)
+write.csv(merged_uq_cohort@meta.data[,c("group","Il1r1")], paste0(save_path, "Il1r1.csv"))
+write.csv(merged_uq_cohort@meta.data[,c("group","Il1r1","seurat_clusters")], paste0(save_path, "Il1r1_with_clusters.csv"))
+
+```

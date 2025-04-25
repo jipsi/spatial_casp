@@ -1,0 +1,458 @@
+---
+title: "SD23.9.1"
+author: "Shoumit Dey"
+date: '2024-10-04'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(dplyr)
+library(sqldf)
+library(ggplot2)
+library(patchwork)
+library(mclust)
+library(RColorBrewer)
+library(ggpubr)
+library(tradeSeq)
+library(data.table)
+library(GSEABase)
+library(plotly)
+library(spatstat)
+library(gplots)
+library(corrplot)
+library(stringr)
+library(VennDiagram)
+library(grid)#for printing PDFs off finder makrer
+library(reshape2)
+
+study_name<-"caspase1_nash"
+study_path<-"D:/GoogleDrive/spatial_leishmania/spatial/_EXPERIMENTS/SD23.9.1_UQ_Collaboration_Sabrina_NASH_Caspase/re-alignment/"
+cell2location_path<-paste0(study_path,"cell2location_nash/")
+
+#
+all_samples <-c("A","B","C","D")
+sample_group <- c("healthy","caspase1","mc_def","mc_def_caspase1")
+
+
+save_path<-paste0(study_path,"R/")
+save_on<-1
+```
+
+
+
+```{r read_RDS_if_available}
+res=0.3
+dims=12
+integrated_uq_cohort <- readRDS(paste0(save_path, "integrated_dims",dims,"_res",res,"_uq_cohort.Rds"))
+integrated_uq_cohort$group <- factor(integrated_uq_cohort$group, levels = c("healthy","caspase1","mc_def","mc_def_caspase1"))
+integrated_uq_cohort$origin <- factor(integrated_uq_cohort$origin, levels = c("healthy_nA1","healthy_nA2","healthy_nA3","caspase1_nB1","caspase1_nB2","caspase1_nB3","mc_def_nC1","mc_def_nC2","mc_def_nC3","mc_def_caspase1_nD1","mc_def_caspase1_nD2","mc_def_caspase1_nD3"))
+#for plotting purposes only
+merged_uq_cohort <- readRDS(paste0(save_path, "merged_uq_cohort.Rds"))
+```
+
+
+```{r change_meta}
+cell2location_abundances <- read.csv(paste0(cell2location_path, "q05_cell_abundance_w_sf_barcoded.csv"))
+rownames(cell2location_abundances)<-cell2location_abundances$barcode
+
+cell_types<-colnames(cell2location_abundances)
+cell_types<-cell_types[2:length(cell_types)]
+cell_types
+# [1] "Endo1"         "Tcells"        "B.cells"       "Tcells2"       "Res..Macs"     "Infilt..Macs"  "Neutrophils"   "DC1"           "Endo2"         "Cholangiocyte" "Hepatocytes"   "Dividing"     
+# [13] "Plasma"        "DC2"           "HSC"  
+df<-cell2location_abundances[,cell_types]#_thresholded
+
+# calculate the maximum of each column - Not applicable for this dataset
+#df_max <- apply(df, 2, max)
+#df_max <- colMaxs(df) requires a package
+df_median <- apply(df, 2, median)
+
+# sort the dataframe based on the mean values
+df_sorted <- df[, order(df_median, decreasing = T)]
+#df_sorted <- df[, order(df_median, decreasing = T)]
+df_melt <- reshape2::melt(df_sorted)
+
+#pdf(paste0(save_path, "sorted_all_box_cell2space_sd23.9.1.pdf"), height = 10, width=7)
+  ggplot(data = df_melt, aes(x = value, y = variable, fill = variable)) + 
+        geom_boxplot() + 
+        coord_flip()  + 
+        theme_classic() + 
+        theme(legend.position="none", axis.text.x = element_text(angle = 90, hjust = 1)) +
+        #geom_vline(aes(xintercept = median(df_median)), col = "red", size = 0.3) +
+        ylab(label = "") +
+        xlab(label = "Cell2Location q05 abundances")
+#dev.off() 
+#threshold abundances
+#subset_df_max <- subset(df_max, df_max>median(df_max))
+subset_df_median <- subset(df_median, df_median>median(df_median))
+cell2location_abundances_thresholded <- cell2location_abundances[, names(subset_df_median)]
+
+#no thresholding
+#cell2location_abundances_thresholded <- df
+
+#already stored in the rds. Only uncomment when running all over again
+#integrated_uq_cohort<-AddMetaData(integrated_uq_cohort, metadata = cell2location_abundances_thresholded)
+
+#no thresholding
+integrated_uq_cohort<-AddMetaData(integrated_uq_cohort, metadata = cell2location_abundances)
+merged_uq_cohort<-AddMetaData(merged_uq_cohort, metadata = cell2location_abundances)
+```
+
+```{r scatter_macs}
+integrated_uq_cohort <- SetIdent(integrated_uq_cohort, value = "group")
+
+FeatureScatter(integrated_uq_cohort, feature1 = "Res..Macs", feature2 = "Infilt..Macs", group.by = "group", pt.size = 0.1) + NoLegend()
+
+FeatureScatter(integrated_uq_cohort, feature1 = "Res..Macs", feature2 = "Infilt..Macs", cells = WhichCells(integrated_uq_cohort, idents = "healthy"), pt.size = 0.5) + NoLegend()
+FeatureScatter(integrated_uq_cohort, feature1 = "Res..Macs", feature2 = "Infilt..Macs", cells = WhichCells(integrated_uq_cohort, idents = "caspase1"), pt.size = 0.5) + NoLegend()
+mcd_wt_res_infilt<-FeatureScatter(integrated_uq_cohort, feature1 = "Res..Macs", feature2 = "Infilt..Macs", cells = WhichCells(integrated_uq_cohort, idents = "mc_def"), pt.size = 0.5) + NoLegend()
+mcd_casp_res_infilt<-FeatureScatter(integrated_uq_cohort, feature1 = "Res..Macs", feature2 = "Infilt..Macs", cells = WhichCells(integrated_uq_cohort, idents = "mc_def_caspase1"), pt.size = 0.5) + NoLegend()
+
+mcd_wt_res_infilt + mcd_casp_res_infilt
+
+FeatureScatter(integrated_uq_cohort, feature1 = "Infilt..Macs", feature2 = "Hepatocytes", cells = WhichCells(integrated_uq_cohort, idents = "healthy"), pt.size = 0.5) + NoLegend()
+FeatureScatter(integrated_uq_cohort, feature1 = "Infilt..Macs", feature2 = "Hepatocytes", cells = WhichCells(integrated_uq_cohort, idents = "caspase1"), pt.size = 0.5) + NoLegend()
+mcd_wt_hep_infilt<-FeatureScatter(integrated_uq_cohort, feature1 = "Infilt..Macs", feature2 = "Hepatocytes", cells = WhichCells(integrated_uq_cohort, idents = "mc_def"), pt.size = 0.5) + NoLegend()
+mcd_casp_hep_infilt<-FeatureScatter(integrated_uq_cohort, feature1 = "Infilt..Macs", feature2 = "Hepatocytes", cells = WhichCells(integrated_uq_cohort, idents = "mc_def_caspase1"), pt.size = 0.5) + NoLegend()
+
+pdf(paste0(save_path, "scatter_macs_sd23.9.1_new.pdf"), height =6, width=8)
+  mcd_wt_res_infilt + mcd_casp_res_infilt 
+  mcd_wt_hep_infilt + mcd_casp_hep_infilt
+dev.off()  
+
+
+
+
+# Create plots using ggplot2
+library(ggplot2)
+library(gridExtra)
+library(Seurat)
+
+# Create data frames from the metadata
+mcd_data <- FetchData(mcd, vars = c("Res..Macs", "Infilt..Macs", "Hepatocytes"))
+mcdc_data <- FetchData(mcdc, vars = c("Res..Macs", "Infilt..Macs", "Hepatocytes"))
+
+mcd_ResInf_p<-cor.test(mcd$Res..Macs, mcd$Infilt..Macs, method="pearson")
+# MCD dataset plots
+p1p <- ggplot(mcd_data, aes(x=Res..Macs, y=Infilt..Macs)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method="lm", color="red") +
+  labs(title="MCD: Resident vs Infiltrating Macrophages",
+       subtitle=paste0("Lm; Pearson's corr=",round(mcd_ResInf_p$estimate, digits=3)),
+       x="Resident Macrophages",
+       y="Infiltrating Macrophages") +
+  theme_minimal()
+
+mcd_HepInf_p<-cor.test(mcd$Hepatocytes, mcd$Infilt..Macs, method="pearson")
+p2p <- ggplot(mcd_data, aes(x=Hepatocytes, y=Infilt..Macs)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method="lm", color="red") +
+  labs(title="MCD: Hepatocytes vs Infiltrating Macrophages",
+       subtitle=paste0("Lm; Pearson's corr=",round(mcd_HepInf_p$estimate, digits=3)),
+       x="Hepatocytes",
+       y="Infiltrating Macrophages") +
+  theme_minimal()
+
+mcdc_ResInf_p<-cor.test(mcdc$Res..Macs, mcdc$Infilt..Macs, method="pearson")
+# MCDC dataset plots
+p3p <- ggplot(mcdc_data, aes(x=Res..Macs, y=Infilt..Macs)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method="lm", color="red") +
+  labs(title="MCDC: Resident vs Infiltrating Macrophages",
+       subtitle=paste0("Lm; Pearson's corr=",round(mcdc_ResInf_p$estimate, digits=3)),
+       x="Resident Macrophages",
+       y="Infiltrating Macrophages") +
+  theme_minimal()
+
+mcdc_HepInf_p<-cor.test(mcdc$Hepatocytes, mcdc$Infilt..Macs, method="pearson")
+p4p <- ggplot(mcdc_data, aes(x=Hepatocytes, y=Infilt..Macs)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method="lm", color="red") +
+  labs(title="MCDC: Hepatocytes vs Infiltrating Macrophages",
+       subtitle=paste0("Lm; Pearson's corr=",round(mcdc_HepInf_p$estimate, digits=3)),
+       x="Hepatocytes",
+       y="Infiltrating Macrophages") +
+  theme_minimal()
+###########################
+###########################
+mcd_ResInf_s<-cor.test(mcd$Res..Macs, mcd$Infilt..Macs, method="spearman")
+# MCD dataset plots
+p1s <- ggplot(mcd_data, aes(x=Res..Macs, y=Infilt..Macs)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method="loess", color="red") +
+  labs(title="MCD: Resident vs Infiltrating Macrophages",
+       subtitle=paste0("Loess; Spearman's rho=",round(mcd_ResInf_s$estimate, digits=3)),
+       x="Resident Macrophages",
+       y="Infiltrating Macrophages") +
+  theme_minimal()
+mcd_HepInf_s<-cor.test(mcd$Hepatocytes, mcd$Infilt..Macs, method="spearman")
+p2s <- ggplot(mcd_data, aes(x=Hepatocytes, y=Infilt..Macs)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method="loess", color="red") +
+  labs(title="MCD: Hepatocytes vs Infiltrating Macrophages",
+       subtitle=paste0("Loess; Spearman's rho=",round(mcd_HepInf_s$estimate, digits=3)),
+       x="Hepatocytes",
+       y="Infiltrating Macrophages") +
+  theme_minimal()
+mcdc_ResInf_s<-cor.test(mcdc$Res..Macs, mcdc$Infilt..Macs, method="spearman")
+# MCDC dataset plots
+p3s <- ggplot(mcdc_data, aes(x=Res..Macs, y=Infilt..Macs)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method="loess", color="red") +
+  labs(title="MCDC: Resident vs Infiltrating Macrophages",
+       subtitle=paste0("Loess; Spearman's rho=",round(mcdc_ResInf_s$estimate, digits=3)),
+       x="Resident Macrophages",
+       y="Infiltrating Macrophages") +
+  theme_minimal()
+mcdc_HepInf_s<-cor.test(mcdc$Hepatocytes, mcdc$Infilt..Macs, method="spearman")
+p4s <- ggplot(mcdc_data, aes(x=Hepatocytes, y=Infilt..Macs)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method="loess", color="red") +
+  labs(title="MCDC: Hepatocytes vs Infiltrating Macrophages",
+       subtitle=paste0("Loess; Spearman's rho=",round(mcdc_HepInf_s$estimate, digits=3)),
+       x="Hepatocytes",
+       y="Infiltrating Macrophages") +
+  theme_minimal()
+
+# Arrange all plots in a 2x2 grid
+grid.arrange(p1p, p3p, p2p, p4p, ncol=2)
+grid.arrange(p1s, p3s, p2s, p4s, ncol=2)
+
+ggsave(paste0(save_path, "scatter_macs_sd23.9.1_new_pearsons_lm.pdf"), arrangeGrob(p1p, p3p, p2p, p4p, ncol=2), 
+       width=12, height=10)
+ggsave(paste0(save_path, "scatter_macs_sd23.9.1_new_spearman_loess.pdf"), arrangeGrob(p1s, p3s, p2s, p4s, ncol=2), 
+       width=12, height=10)
+
+```
+
+```{r spatial_maps}
+
+pdf(paste0(save_path, "macrophages_cell2space_sd23.9.1_new.pdf"), height =6, width=8)
+  #for(image_count in 1:length(integrated_uq_cohort@images)){
+    #image<-names(integrated_uq_cohort@images)[image_count]
+    print(SpatialFeaturePlot(merged_uq_cohort, features = c("Res..Macs","Infilt..Macs","Neutrophils"), crop = F, image.alpha = 0, pt.size.factor = 1, alpha = c(0.1,2), ncol = 4, stroke = 0))
+  #}
+dev.off()
+
+
+
+
+# pdf(paste0(save_path, "thresholded_cell2space_violins_sd23.9.1.pdf"), height = 9, width=15)
+#   #by clusters
+#   print(VlnPlot(integrated_uq_cohort, features = head(thresh_cell_types,10), pt.size = 0.1))
+#   print(VlnPlot(integrated_uq_cohort, features = tail(thresh_cell_types,10), pt.size = 0.1))
+#   #by sample
+#   print(VlnPlot(integrated_uq_cohort, features = thresh_cell_types[1:10], group.by = "morpho", pt.size = 0.1))
+#   print(VlnPlot(integrated_uq_cohort, features = thresh_cell_types[11:20], group.by = "morpho", pt.size = 0.1))
+# dev.off()
+
+
+```
+
+
+```{r corrplot}
+
+#significance
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# str.split(cell2location_abundances$spot_id,"_")
+cell2location_abundances<-integrated_uq_cohort@meta.data[, cell_types]
+cell2location_abundances_corr <- cor(cell2location_abundances)
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(cell2location_abundances)
+
+
+pdf(paste0(save_path, "thresholded_cell2space_sd23.9.1_spot_correlation.pdf"), height = 10, width=15)
+  corrplot(cell2location_abundances_corr, method="pie", type = "upper", 
+           p.mat = p.mat, sig.level = 0.01, insig = "blank", tl.col="black", tl.srt=45,
+           order="hclust")
+  corrplot(cell2location_abundances_corr, method="pie", type = "lower", 
+           p.mat = p.mat, sig.level = 0.01, insig = "blank", tl.col="black", tl.srt=45,
+           order="hclust")
+  
+  corrplot(cell2location_abundances_corr, type="upper", order="hclust",
+           p.mat = p.mat, sig.level = 0.01, insig = "blank", tl.col="black", tl.srt=45,
+           col=brewer.pal(n=8, name="PuOr"))
+  corrplot(cell2location_abundances_corr, type="lower", order="hclust",
+           p.mat = p.mat, sig.level = 0.01, insig = "blank", tl.col="black", tl.srt=45,
+           col=brewer.pal(n=8, name="PuOr"))
+dev.off()  
+
+
+
+```
+
+```{r corrplots per group}
+#corrplots per group
+integrated_uq_cohort<-SetIdent(integrated_uq_cohort, value = "seurat_clusters")
+for(group in unique(integrated_uq_cohort$seurat_clusters)){
+  obj<-subset(integrated_uq_cohort, idents=group)
+  cell2location_abundances<-obj@meta.data[, cell_types]
+  cell2location_abundances_corr <-cor(cell2location_abundances)
+  p.mat <- cor.mtest(cell2location_abundances)
+  print(obj)
+  rm(obj)
+  pdf(paste0(save_path, "thresholded_cell2space_sd23.9.1_spot_correlation_",gsub("/", "_cluster_", group),".pdf"), height = 10, width=15)
+  corrplot(cell2location_abundances_corr, type = "upper",
+           p.mat = p.mat, sig.level = 0.05, insig = "blank", tl.col="black", tl.srt=45,
+           order="hclust")
+    corrplot(cell2location_abundances_corr, type = "lower",
+           p.mat = p.mat, sig.level = 0.05, insig = "blank", tl.col="black", tl.srt=45,
+           order="hclust")
+
+  corrplot(cell2location_abundances_corr, type="upper",
+           p.mat = p.mat, sig.level = 0.01, insig = "blank", tl.col="black", tl.srt=45,
+           col=brewer.pal(n=8, name="PuOr"))
+
+  corrplot(cell2location_abundances_corr, type="upper",
+           p.mat = p.mat, sig.level = 0.001, insig = "blank", tl.col="black", tl.srt=45,
+           col=brewer.pal(n=8, name="PuOr"))
+  dev.off()
+}
+integrated_uq_cohort<-SetIdent(integrated_uq_cohort, value = "seurat_clusters")
+```
+
+```{r}
+
+#############################################################################
+##########ONLY WHEN DECONVOLUTING INDIVIDUAL SPATIAL CLUSTERS/REGIONS################
+#############################################################################
+cluster2only <- subset(integrated_uq_cohort, idents = 2)
+cluster2only_for_spatial <- subset(merged_uq_cohort, subset = seurat_clusters == 2)
+list_graph<-list()
+counter <- 1
+#https://www.biostars.org/p/285296/
+#https://kateto.net/networks-r-igraph
+Idents(cluster2only_for_spatial) <- "group"
+for(group in unique(cluster2only$group)){
+  obj<-subset(cluster2only, idents=group)
+  #print(obj)
+  print(table(obj$orig.ident))
+  df<-obj@meta.data[,c("Tcells","B.cells","Res..Macs","Infilt..Macs","Neutrophils","Dividing","DC1","DC2","Plasma","Dividing")]#_thresholded
+  
+  # calculate the maximum of each column - Not applicable for this dataset
+  #df_max <- apply(df, 2, max)
+  #df_max <- colMaxs(df) requires a package
+  #df_median <- apply(df, 2, median)
+  df_3rd_quantile <- apply(df, 2, function(x) quantile(x, probs = 0.75,na.rm = T))
+  
+  # sort the dataframe based on the mean values
+  #df_sorted <- df[, order(df_max, decreasing = T)]
+  df_sorted <- df[, order(df_3rd_quantile, decreasing = T)]
+  df_melt <- melt(df_sorted)
+  
+  pdf(paste0(save_path,gsub("/", "_", group), "_IMMUNE_CLUSTER2_ONLY_sorted_box_cell2space_sd23.9.1.pdf"), height = 10, width=7)
+    print(ggplot(data = df_melt, aes(x = value, y = variable, fill = variable)) + 
+          geom_boxplot() + 
+          coord_flip()  + 
+          theme_classic() + 
+          theme(legend.position="none", axis.text.x = element_text(angle = 90, hjust = 1)) +
+          geom_vline(aes(xintercept = median(df_3rd_quantile)), col = "red", size = 0.3) +
+           scale_x_continuous(limits=c(0, 5), breaks=c(0,2.5, 5)) +
+          ylab(label = "") +
+          xlab(label = paste0("Cell2Location q05 abundances for ",gsub("/", "_", group))))
+  dev.off() 
+  #THRESHOLD HERE
+  # subset_df_3rd_quantile <- subset(df_3rd_quantile, df_3rd_quantile>mean(df_3rd_quantile))
+  # cell2location_abundances <- df[, names(subset_df_3rd_quantile)]
+  #NO THRESHOLD HERE
+  cell2location_abundances <- df
+  
+  #create distance metric
+  df<-1-cor(cell2location_abundances, method="pearson")
+  print(head(df))
+  #run hclust
+  #find_cell_niches(t(cell2location_abundances))
+  # Create a graph adjacency based on correlation distances between cell types in  pairwise fashion.
+  g <- graph.adjacency(df, mode="undirected", weighted=TRUE, diag=FALSE)
+  
+  # Simplfy the adjacency object
+  g <- simplify(g, remove.multiple=TRUE, remove.loops=TRUE)
+  
+  
+  # Colour negative correlation edges as blue
+  E(g)[which(E(g)$weight>1)]$color <- "darkred"
+  
+  # Colour positive correlation edges as red
+  E(g)[which(E(g)$weight<1)]$color <- "darkblue"
+  
+  # Convert edge weights to absolute values
+  #E(g)$weight <- abs(E(g)$weight)
+  
+  # Change arrow size
+  # For directed graphs only
+  #E(g)$arrow.size <- 1.0
+  
+  # Remove edges below absolute Pearson correlation (1-0.6)
+  g <- delete_edges(g, E(g)[which(E(g)$weight>0.8)])
+  
+  # Remove any vertices remaining that have no edges
+  g <- delete_vertices(g, igraph::degree(g)==0)
+  
+  # Assign names to the graph vertices (optional)
+  #V(g)$name <- V(g)$name
+  V(g)$name <- colnames(cell2location_abundances)
+  # Change shape of graph vertices
+  V(g)$shape <- "sphere"
+  # Change colour of graph vertices
+  V(g)$color <- "lightblue"
+  # Change colour of vertex frames
+  V(g)$vertex.frame.color <- "white"
+  
+  V(g)
+  E(g)
+  
+  # Scale the size of the vertices to be proportional to the level of expression of each gene represented by each vertex
+  # Multiply scaled vales by a factor of 10
+  scale01 <- function(x){(x-min(x))/(max(x)-min(x))}
+  vSizes <- (scale01(apply(cell2location_abundances_thresholded, 1, mean)) + 1.0) * 10
+  
+  # Amplify or decrease the width of the edges
+  edgeweights <- E(g)$weight * 2.0
+  # Amplify or decrease the width of the edges
+  #edgeweights <- (1-E(g)$weight) * 2.0
+  
+  # Convert the graph adjacency object into a minimum spanning tree based on Prim's algorithm
+  mst <- mst(g, algorithm="prim")
+  
+  #find communities
+  mst.communities <- cluster_louvain(mst)
+  #plot the graph
+  mst.clustering <- make_clusters(mst, membership=mst.communities$membership)
+  V(mst)$color <- mst.communities$membership + 1
+  
+  pdf(file = paste0(save_path, gsub("/", "_", group), "_IMMUNE_CLUSTER2_ONLY_cell2space_sd23.9.1_igraph.pdf"))
+  plot(
+    mst.clustering, mst,
+    layout=layout.fruchterman.reingold,
+    edge.curved=TRUE,
+    vertex.size=vSizes,
+    vertex.label.dist=-0.3,
+    vertex.label.color="black",
+    asp=FALSE,
+    vertex.label.cex=1,
+    edge.width=edgeweights,
+    edge.arrow.mode=0,
+    main=paste0("Clusters_",gsub("/", "_", group))
+    )
+  dev.off()
+  list_graph[[group]]<-mst.clustering
+  counter<-counter+1
+}
+
+```
+
+
