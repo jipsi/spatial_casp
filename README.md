@@ -1,6 +1,6 @@
-# CASP1 CDL Study: Spatial Transcriptomics Analysis
+# Caspase-1 self-terminates protease activity to enforce homeostasis and prevent inflammasome-driven diseases
 
-This repository contains the code and documentation for the study "Caspase-1 self-terminates protease activity to enforce homeostasis and prevent inflammasome-driven diseases".
+This repository contains the code and documentation for the study.
 
 ## Authors
 Sabrina Sofia Burgener<sup>1†</sup>, Mark Thomas Milner<sup>1*</sup>, Shoumit Dey<sup>2*</sup>, Pooranee Morgan<sup>3</sup>, Daniel G Blackmore<sup>4</sup>, Emmanuelle Frampton<sup>1</sup>, Gregory Miller<sup>5,6</sup>, Monalisa Durate de Oliveira<sup>1</sup>, Kirsten Mayra Kenney<sup>1</sup>, Rinie Bajracharya<sup>1</sup>, Ulrich Baumgartner<sup>7</sup>, Albert Xiong<sup>1,8</sup>, Quan Nguyen<sup>1,8</sup>, Liviu-Gabriel Bodea<sup>4</sup>, Andrew Clouston<sup>5,6</sup>, Dave Boucher<sup>9</sup>, Juergen Goetz<sup>4</sup>, Andrew Murphy<sup>3</sup>, Paul M Kaye<sup>2</sup>, Kate Schroder<sup>1,10†</sup>
