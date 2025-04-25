@@ -103,7 +103,7 @@ The repository relies on several data sources:
 ## Contact and Correspondence
 - Sabrina Sofia Burgener: s.burgener@uq.edu.au
 - Kate Schroder: k.schroder@uq.edu.au
-- Shoumit Dey (data/code inquiries): shoumit.dey@york.ac.uk / shoumit@gmail.com
+- Shoumit Dey (for spatial transcriptomics): shoumit.dey@york.ac.uk / shoumit@gmail.com
 
 ## License
 This project is covered under the MIT License.
