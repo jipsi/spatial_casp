@@ -80,7 +80,6 @@ The repository relies on several data sources:
 
 3. **Clustering and Visualization**
    - Dimension reduction (PCA, t-SNE, UMAP)
-   - Clustering at various resolutions
    - Spatial visualization of clusters
 
 4. **Differential Expression Analysis**
@@ -94,16 +93,6 @@ The repository relies on several data sources:
    - Correlation analysis to determine spatial co-location of different cell types
    - Analysis of resident vs. infiltrating macrophages and their relationship to hepatocytes
 
-## Key Findings from Spatial Analysis
-
-The spatial transcriptomics analysis revealed:
-
-1. Distinct spot clusters with specific gene expression profiles present across all liver samples
-2. Cluster 2 spots showed an immune-like signature that was enriched with the MCD diet and further increased in *Casp1.CDL* mice
-3. Upregulation of genes associated with IL-1R signaling and NF-κB pathway
-4. CASP1 CDL mutation uncoupled the spatial co-location of infiltrating macrophages, resident macrophages, and hepatocytes
-5. Elevated expression of inflammatory markers like *Il1rn*, *Cxcl10*, and *Mmp12* in response to MCD diet and CASP1 CDL mutation
-
 ## Running the Analysis
 
 1. Clone this repository
@@ -114,8 +103,7 @@ The spatial transcriptomics analysis revealed:
 ## Contact and Correspondence
 - Sabrina Sofia Burgener: s.burgener@uq.edu.au
 - Kate Schroder: k.schroder@uq.edu.au
-- Paul Kaye: paul.kaye@york.ac.uk
-- Shoumit Dey (data/code inquiries): shoumit.dey@york.ac.uk
+- Shoumit Dey (data/code inquiries): shoumit.dey@york.ac.uk / shoumit@gmail.com
 
 ## License
 This project is covered under the MIT License.
